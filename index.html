@@ -1,0 +1,470 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f1216">
+<title>Traffic Counter HP</title>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
+<style>
+  :root{
+    --bg:#0f1216; --panel:#171b21; --line:#2a313a; --text:#e6e9ee; --muted:#8b95a3;
+    --accent:#f5b301; --a:#3ec7a6; --b:#ff7a59; --danger:#ff5c7a;
+    color-scheme:dark;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  [hidden]{display:none!important}
+  html,body{margin:0;background:var(--bg);color:var(--text);font:15px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+  body{padding:env(safe-area-inset-top,0) 12px calc(env(safe-area-inset-bottom,0) + 16px)}
+  header{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 0}
+  header h1{font-size:16px;margin:0}
+  .pill{font-size:12px;color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:3px 9px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:60%}
+  .pill.live{color:#111;background:var(--a);border-color:var(--a)}
+  .pill.err{color:#fff;background:var(--danger);border-color:var(--danger)}
+  button,select,input{font:inherit;color:var(--text);background:#0c0f13;border:1px solid var(--line);border-radius:8px;padding:10px 12px}
+  button{cursor:pointer;background:#1f252d;min-height:44px}
+  button:active{transform:scale(.98)}
+  button.primary{background:var(--accent);color:#111;border-color:var(--accent);font-weight:700}
+  button.on{outline:2px solid var(--accent);outline-offset:1px}
+  button:disabled{opacity:.45}
+  .row{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:10px}
+  .row2{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}
+  .stage{position:relative;background:#000;border-radius:10px;overflow:hidden;width:100%;aspect-ratio:16/9;max-height:62vh;margin-inline:auto}
+  .stage video,.stage canvas{position:absolute;inset:0;width:100%;height:100%;object-fit:contain}
+  .stage canvas{touch-action:none}
+  .stage .hint{position:absolute;inset:auto 0 0 0;padding:8px 10px;font-size:13px;background:linear-gradient(transparent,rgba(0,0,0,.75));pointer-events:none}
+  .empty{position:absolute;inset:0;display:grid;place-items:center;text-align:center;color:var(--muted);padding:20px;font-size:14px}
+  .stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:12px}
+  .stat{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:8px 10px}
+  .stat .v{font-size:24px;font-weight:700;font-variant-numeric:tabular-nums}
+  .stat .k{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-top:10px}
+  table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
+  th,td{padding:6px 4px;text-align:right;border-bottom:1px solid var(--line)}
+  th:first-child,td:first-child{text-align:left}
+  th{color:var(--muted);font-weight:500;font-size:12px}
+  tfoot td{font-weight:700;border-bottom:none}
+  .dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px;vertical-align:middle}
+  details summary{cursor:pointer;font-weight:600;padding:4px 0}
+  .form{display:grid;grid-template-columns:1fr auto;gap:8px 10px;align-items:center;margin-top:8px;font-size:14px}
+  .form input,.form select{width:9.5em;padding:8px}
+  .form input[type=text],.form input[type=datetime-local]{width:100%}
+  .full{grid-column:1/-1}
+  .muted{color:var(--muted);font-size:12px}
+  .scroll{max-height:200px;overflow:auto}
+  .meta{display:flex;flex-wrap:wrap;gap:4px 12px;font-size:12px;color:var(--muted);margin-top:6px}
+  .meta b{color:var(--text);font-weight:600}
+  #file{display:none}
+</style>
+</head>
+<body>
+<header>
+  <h1>Traffic Counter</h1>
+  <span id="status" class="pill">memuat model…</span>
+</header>
+
+<div class="row2">
+  <button id="btnCam" class="primary">Kamera HP</button>
+  <button id="btnFile">Video rekaman</button>
+  <input id="file" type="file" accept="video/*">
+</div>
+
+<div class="stage" id="stage" style="margin-top:10px">
+  <video id="video" muted playsinline></video>
+  <canvas id="overlay" width="1280" height="720"></canvas>
+  <div class="empty" id="empty">Pilih <b>&nbsp;Kamera HP&nbsp;</b> atau <b>&nbsp;Video rekaman&nbsp;</b>.<br>Letakkan HP stabil (tripod/penjepit), menghadap jalan dari atas.</div>
+  <div class="hint" id="hint" hidden>Seret jari melintang jalan untuk membuat garis hitung</div>
+</div>
+<div class="meta">
+  <span>Model <b id="mstat">memuat…</b></span>
+  <span>Deteksi <b id="fps">0</b> fps</span>
+  <span>Objek <b id="nTracks">0</b></span>
+  <span>Waktu <b id="clock">—</b></span>
+  <span>Durasi <b id="dur">0:00</b></span>
+</div>
+
+<div class="row">
+  <button id="btnLine">Garis</button>
+  <button id="btnRun" class="primary" disabled>Mulai</button>
+  <button id="btnReset">Reset</button>
+</div>
+
+<div class="stats">
+  <div class="stat"><div class="v" id="totVeh">0</div><div class="k">kendaraan</div></div>
+  <div class="stat"><div class="v" id="totSmp">0</div><div class="k">smp</div></div>
+  <div class="stat"><div class="v" id="rate">0</div><div class="k">smp/jam</div></div>
+</div>
+
+<div class="card">
+  <table>
+    <thead><tr><th>Jenis</th><th style="color:var(--a)">Arah 1</th><th style="color:var(--b)">Arah 2</th><th>Total</th></tr></thead>
+    <tbody id="tbClass"></tbody>
+    <tfoot><tr><td>Jumlah</td><td id="ftA">0</td><td id="ftB">0</td><td id="ftT">0</td></tr></tfoot>
+  </table>
+</div>
+
+<div class="row2">
+  <button id="btnCsv">CSV kejadian</button>
+  <button id="btnCsvInt">CSV per interval</button>
+</div>
+
+<div class="card">
+  <details>
+    <summary>Rekap per interval</summary>
+    <div class="scroll"><table>
+      <thead><tr><th>Mulai</th><th>MP</th><th>SM</th><th>KB</th><th>smp</th></tr></thead>
+      <tbody id="tbInt"></tbody>
+    </table></div>
+  </details>
+</div>
+
+<div class="card">
+  <details>
+    <summary>Pengaturan</summary>
+    <div class="form">
+      <label class="full">Nama titik survei
+        <input id="site" type="text" placeholder="mis. Jl. Raya Cisauk depan pasar"></label>
+      <label for="model">Model</label>
+      <select id="model"><option value="lite_mobilenet_v2">Ringan (cepat)</option><option value="mobilenet_v2">Akurat (lambat)</option></select>
+      <label for="minScore">Skor minimum</label>
+      <input id="minScore" type="number" min="0.1" max="0.9" step="0.05" value="0.35">
+      <label for="interval">Interval rekap</label>
+      <select id="interval"><option value="5">5 menit</option><option value="15" selected>15 menit</option><option value="60">60 menit</option></select>
+      <label for="empMP">emp MP (mobil)</label><input id="empMP" type="number" step="0.05" value="1.00">
+      <label for="empSM">emp SM (motor)</label><input id="empSM" type="number" step="0.05" value="0.25">
+      <label for="empKB">emp KB (bus/truk)</label><input id="empKB" type="number" step="0.05" value="1.30">
+      <label class="full" id="startWrap" hidden>Waktu mulai rekaman (untuk video)
+        <input id="fileStart" type="datetime-local" step="1"></label>
+      <label class="full"><input id="showBoxes" type="checkbox" checked style="width:auto"> Tampilkan kotak deteksi</label>
+    </div>
+    <p class="muted">Nilai emp awal hanya contoh; sesuaikan dengan PKJI 2023. Hitungan disimpan otomatis di HP ini sampai Anda menekan Reset.</p>
+  </details>
+</div>
+
+<script>
+/* ---------- Konfigurasi ---------- */
+const CLASSES = {
+  car:        {label:"Mobil",        grp:"MP",  hex:"#4ea8ff"},
+  motorcycle: {label:"Sepeda motor", grp:"SM",  hex:"#f5b301"},
+  bus:        {label:"Bus",          grp:"KB",  hex:"#c77dff"},
+  truck:      {label:"Truk",         grp:"KB",  hex:"#ff5c7a"},
+  bicycle:    {label:"Sepeda",       grp:"KTB", hex:"#7ddc6a"},
+};
+const ORDER = ["car","motorcycle","bus","truck","bicycle"];
+const MAX_MISSED = 8, MAX_MATCH_DIST = 0.09;
+const STORE_KEY = "trafficCounterHP.v1";
+
+/* ---------- State ---------- */
+const $ = id => document.getElementById(id);
+const video = $("video"), canvas = $("overlay"), ctx = canvas.getContext("2d");
+let model = null, modelName = "", running = false, drawing = false, dragStart = null;
+let source = null;          // "camera" | "file"
+let stream = null, fileStartMs = 0;
+let line = null, tracks = [], nextId = 1, events = [];
+let fps = {n:0, t0:performance.now()}, runStart = 0, runAccum = 0, wakeLock = null;
+
+function setStatus(t, cls) { const s=$("status"); s.textContent=t; s.className="pill"+(cls?" "+cls:""); }
+
+/* ---------- Penyimpanan lokal ---------- */
+function save() {
+  try { localStorage.setItem(STORE_KEY, JSON.stringify({events:events.map(e=>({...e,t:e.t.getTime()})), line, site:$("site").value})); } catch(e) {}
+}
+function restore() {
+  try {
+    const d = JSON.parse(localStorage.getItem(STORE_KEY) || "null");
+    if (!d) return;
+    events = (d.events||[]).map(e => ({...e, t:new Date(e.t)}));
+    if (d.site) $("site").value = d.site;
+    if (d.line) line = d.line;
+  } catch(e) {}
+}
+
+/* ---------- Model ---------- */
+async function loadModel(name) {
+  if (model && modelName === name) return;
+  $("mstat").textContent = "memuat…";
+  try {
+    await tf.ready();
+    model = await cocoSsd.load({base:name});
+    modelName = name;
+    $("mstat").textContent = (name.startsWith("lite") ? "ringan" : "akurat") + " · " + tf.getBackend();
+    if (!source) setStatus("siap");
+    updateRunBtn();
+  } catch(e) { $("mstat").textContent = "gagal (cek internet)"; setStatus("model gagal dimuat", "err"); console.error(e); }
+}
+$("model").onchange = () => loadModel($("model").value);
+
+/* ---------- Sumber video ---------- */
+function stopSource() {
+  if (stream) { stream.getTracks().forEach(t=>t.stop()); stream = null; }
+  if (video.src) { URL.revokeObjectURL(video.src); video.removeAttribute("src"); }
+  video.srcObject = null;
+}
+function fitStage() {
+  const w = video.videoWidth, h = video.videoHeight;
+  if (!w || !h) return;
+  if (canvas.width !== w || canvas.height !== h) {
+    // skala garis bila ukuran berubah (mis. HP diputar)
+    if (line && canvas.width) {
+      const sx = w/canvas.width, sy = h/canvas.height;
+      line = {a:{x:line.a.x*sx,y:line.a.y*sy}, b:{x:line.b.x*sx,y:line.b.y*sy}};
+    }
+    canvas.width = w; canvas.height = h; tracks = [];
+  }
+  $("stage").style.aspectRatio = w + "/" + h;
+  $("empty").hidden = true;
+  $("hint").hidden = !!line;
+}
+video.addEventListener("loadedmetadata", fitStage);
+video.addEventListener("resize", fitStage);
+
+$("btnCam").onclick = async () => {
+  if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
+    setStatus("kamera butuh HTTPS", "err"); return;
+  }
+  stopSource();
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio:false,
+      video:{facingMode:{ideal:"environment"}, width:{ideal:1280}, height:{ideal:720}, frameRate:{ideal:30}}
+    });
+    video.srcObject = stream; video.loop = false;
+    await video.play();
+    source = "camera"; $("startWrap").hidden = true;
+    setStatus("kamera aktif", "live");
+  } catch(e) {
+    setStatus(e.name === "NotAllowedError" ? "izin kamera ditolak" : "kamera gagal: " + e.name, "err");
+  }
+  updateRunBtn();
+};
+
+$("btnFile").onclick = () => $("file").click();
+$("file").onchange = () => {
+  const f = $("file").files[0]; if (!f) return;
+  stopSource();
+  video.srcObject = null; video.src = URL.createObjectURL(f); video.loop = false;
+  source = "file"; $("startWrap").hidden = false;
+  video.onloadedmetadata = () => {
+    // perkiraan waktu mulai = waktu file terakhir diubah - durasi (bisa dikoreksi di Pengaturan)
+    const start = new Date(f.lastModified - (isFinite(video.duration) ? video.duration*1000 : 0));
+    $("fileStart").value = toLocalInput(start);
+    fileStartMs = start.getTime();
+    fitStage();
+  };
+  video.pause();
+  setStatus("video: " + f.name);
+  updateRunBtn();
+};
+$("fileStart").onchange = () => { const d = new Date($("fileStart").value); if (!isNaN(d)) fileStartMs = d.getTime(); };
+video.addEventListener("ended", () => { if (running) toggleRun(); setStatus("video selesai"); });
+
+function toLocalInput(d){ const p=n=>String(n).padStart(2,"0"); return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`; }
+function nowTime() { return source === "file" ? new Date(fileStartMs + video.currentTime*1000) : new Date(); }
+
+/* ---------- Garis hitung (sentuh) ---------- */
+function toXY(ev) {
+  // memperhitungkan object-fit: contain (letterbox)
+  const r = canvas.getBoundingClientRect(), vw = canvas.width, vh = canvas.height;
+  const s = Math.min(r.width/vw, r.height/vh), ox = (r.width - vw*s)/2, oy = (r.height - vh*s)/2;
+  return {x: Math.max(0,Math.min(vw,(ev.clientX - r.left - ox)/s)), y: Math.max(0,Math.min(vh,(ev.clientY - r.top - oy)/s))};
+}
+$("btnLine").onclick = () => {
+  drawing = !drawing; $("btnLine").classList.toggle("on", drawing);
+  $("hint").hidden = !drawing && !!line;
+  if (drawing) $("hint").textContent = "Seret jari melintang jalan untuk membuat garis hitung";
+};
+canvas.addEventListener("pointerdown", e => { if (!drawing && line) return; if(!drawing){drawing=true;} canvas.setPointerCapture(e.pointerId); dragStart = toXY(e); line = {a:dragStart,b:dragStart}; });
+canvas.addEventListener("pointermove", e => { if (drawing && dragStart) line = {a:dragStart, b:toXY(e)}; });
+canvas.addEventListener("pointerup", e => {
+  if (!drawing || !dragStart) return;
+  line = {a:dragStart, b:toXY(e)}; dragStart = null; drawing = false;
+  $("btnLine").classList.remove("on");
+  if (Math.hypot(line.b.x-line.a.x, line.b.y-line.a.y) < Math.min(canvas.width,canvas.height)*0.05) line = null;
+  $("hint").hidden = !!line;
+  tracks.forEach(t => t.counted = false);
+  save(); updateRunBtn();
+});
+
+/* ---------- Geometri & tracker ---------- */
+function side(p,a,b){ return Math.sign((b.x-a.x)*(p.y-a.y) - (b.y-a.y)*(p.x-a.x)); }
+function crosses(p1,p2,a,b){
+  const s1=side(p1,a,b), s2=side(p2,a,b);
+  if (s1===0||s2===0||s1===s2) return 0;
+  if (side(a,p1,p2) === side(b,p1,p2)) return 0;
+  return s1 < 0 ? 1 : -1;   // 1 = Arah 1 (panah hijau), -1 = Arah 2 (panah oranye)
+}
+function anchor(b){ const [x,y,w,h]=b; return {x:x+w/2, y:y+h*0.8}; }
+
+function updateTracks(dets) {
+  const diag = Math.hypot(canvas.width, canvas.height), used = new Set(), matched = new Set(), pairs = [];
+  tracks.forEach((t,ti) => dets.forEach((d,di) => {
+    const p = anchor(d.bbox), dist = Math.hypot(p.x-t.p.x, p.y-t.p.y)/diag;
+    const pen = CLASSES[d.class].grp === CLASSES[t.cls()].grp ? 0 : 0.03;
+    if (dist < MAX_MATCH_DIST*(1+t.missed*0.25)) pairs.push([dist+pen, ti, di]);
+  }));
+  pairs.sort((a,b)=>a[0]-b[0]);
+  for (const [,ti,di] of pairs) {
+    if (matched.has(ti)||used.has(di)) continue;
+    matched.add(ti); used.add(di);
+    const t = tracks[ti], d = dets[di];
+    t.prev = t.p; t.p = anchor(d.bbox); t.box = d.bbox; t.missed = 0; t.age++;
+    t.votes[d.class] = (t.votes[d.class]||0) + d.score;
+    if (line && !t.counted && t.age >= 2) {
+      const dir = crosses(t.prev, t.p, line.a, line.b);
+      if (dir) { t.counted = true; register(t, dir); }
+    }
+  }
+  tracks.forEach((t,ti) => { if (!matched.has(ti)) t.missed++; });
+  tracks = tracks.filter(t => t.missed <= MAX_MISSED);
+  dets.forEach((d,di) => { if (used.has(di)) return;
+    tracks.push({id:nextId++, p:anchor(d.bbox), prev:anchor(d.bbox), box:d.bbox, missed:0, age:1, counted:false,
+      votes:{[d.class]:d.score}, cls(){ return Object.entries(this.votes).sort((a,b)=>b[1]-a[1])[0][0]; }});
+  });
+}
+
+/* ---------- Hitungan ---------- */
+function register(t, dir) {
+  events.push({t:nowTime(), cls:t.cls(), dir: dir>0 ? "Arah 1" : "Arah 2", id:t.id, src:source});
+  if (navigator.vibrate) navigator.vibrate(15);
+  render(); save();
+}
+function emp(){ return {MP:+$("empMP").value||0, SM:+$("empSM").value||0, KB:+$("empKB").value||0, KTB:0}; }
+
+function render() {
+  const E = emp(), tb = $("tbClass"); tb.innerHTML = "";
+  let A=0,B=0,smp=0;
+  for (const c of ORDER) {
+    const a = events.filter(e=>e.cls===c&&e.dir==="Arah 1").length, b = events.filter(e=>e.cls===c&&e.dir==="Arah 2").length;
+    A+=a; B+=b; smp += (a+b)*E[CLASSES[c].grp];
+    tb.insertAdjacentHTML("beforeend", `<tr><td><span class="dot" style="background:${CLASSES[c].hex}"></span>${CLASSES[c].label}</td><td>${a}</td><td>${b}</td><td>${a+b}</td></tr>`);
+  }
+  $("ftA").textContent=A; $("ftB").textContent=B; $("ftT").textContent=A+B;
+  $("totVeh").textContent=A+B; $("totSmp").textContent=smp.toFixed(1);
+  if (events.length > 1) {
+    const tEnd = events[events.length-1].t.getTime(), tStart = Math.max(events[0].t.getTime(), tEnd-15*60e3);
+    const hrs = Math.max((tEnd-tStart)/3.6e6, 1/60);
+    const s = events.filter(e=>e.t.getTime()>=tStart).reduce((acc,e)=>acc+E[CLASSES[e.cls].grp],0);
+    $("rate").textContent = Math.round(s/hrs);
+  } else $("rate").textContent = 0;
+  const ti = $("tbInt"); ti.innerHTML = "";
+  for (const r of intervals().reverse()) ti.insertAdjacentHTML("beforeend", `<tr><td>${r.label}</td><td>${r.MP}</td><td>${r.SM}</td><td>${r.KB}</td><td>${r.smp.toFixed(1)}</td></tr>`);
+}
+["empMP","empSM","empKB","interval"].forEach(id => $(id).addEventListener("change", render));
+$("site").addEventListener("change", save);
+
+function intervals() {
+  const m = +$("interval").value, E = emp(), bins = new Map();
+  for (const e of events) {
+    const d = new Date(e.t); d.setSeconds(0,0); d.setMinutes(Math.floor(d.getMinutes()/m)*m);
+    if (!bins.has(+d)) bins.set(+d, {start:d, MP:0, SM:0, KB:0, KTB:0, smp:0});
+    const b = bins.get(+d), g = CLASSES[e.cls].grp; b[g]++; b.smp += E[g];
+  }
+  return [...bins.values()].sort((a,b)=>a.start-b.start)
+    .map(b => ({...b, label:b.start.toLocaleString("id-ID",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})}));
+}
+
+/* ---------- Ekspor ---------- */
+function fmt(d){ const p=n=>String(n).padStart(2,"0"); return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`; }
+function slug(){ return ($("site").value.trim() || "survei").replace(/[^\w\-]+/g,"_").slice(0,40); }
+function download(name, rows) {
+  const csv = rows.map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(",")).join("\r\n");
+  const blob = new Blob(["﻿"+csv], {type:"text/csv"});
+  const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = name;
+  document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(a.href), 2000);
+}
+$("btnCsv").onclick = () => download(`kejadian_${slug()}_${Date.now()}.csv`,
+  [["waktu","titik","sumber","jenis_coco","kategori_pkji","arah","track_id"],
+   ...events.map(e => [fmt(e.t), $("site").value, e.src, e.cls, CLASSES[e.cls].grp, e.dir, e.id])]);
+$("btnCsvInt").onclick = () => { const m = +$("interval").value; download(`interval_${slug()}_${Date.now()}.csv`,
+  [["mulai_interval","titik","menit","MP","SM","KB","KTB","total_kendaraan","smp","smp_per_jam"],
+   ...intervals().map(r => [fmt(r.start), $("site").value, m, r.MP, r.SM, r.KB, r.KTB, r.MP+r.SM+r.KB+r.KTB, r.smp.toFixed(2), (r.smp*60/m).toFixed(1)])]); };
+
+let resetArmed = null;
+$("btnReset").onclick = () => {
+  if (!resetArmed) { $("btnReset").textContent = "Yakin?"; resetArmed = setTimeout(()=>{resetArmed=null; $("btnReset").textContent="Reset";}, 2500); return; }
+  clearTimeout(resetArmed); resetArmed = null; $("btnReset").textContent = "Reset";
+  events = []; tracks.forEach(t=>t.counted=true); runAccum = 0; runStart = running ? performance.now() : 0;
+  render(); save();
+};
+
+/* ---------- Loop deteksi ---------- */
+function updateRunBtn(){ $("btnRun").disabled = !(model && source); }
+async function requestWake(){ try { wakeLock = await navigator.wakeLock?.request("screen"); } catch(e) {} }
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && running) requestWake(); });
+
+function toggleRun() {
+  if (!line) { $("btnRun").textContent = "Buat garis dulu"; setTimeout(()=>$("btnRun").textContent = running?"Jeda":"Mulai", 1500); return; }
+  running = !running;
+  $("btnRun").textContent = running ? "Jeda" : "Mulai";
+  $("btnRun").classList.toggle("on", running);
+  if (running) {
+    runStart = performance.now(); requestWake();
+    if (source === "file") video.play();
+    loop();
+  } else {
+    runAccum += performance.now() - runStart;
+    if (source === "file") video.pause();
+    try { wakeLock?.release(); } catch(e) {}
+  }
+}
+$("btnRun").onclick = toggleRun;
+
+async function loop() {
+  if (!running) return;
+  if (video.readyState >= 2 && !video.paused) {
+    try {
+      const raw = await model.detect(video, 50, +$("minScore").value || 0.35);
+      updateTracks(raw.filter(d => CLASSES[d.class]));
+      fps.n++;
+    } catch(e) { console.warn(e); }
+  }
+  const now = performance.now();
+  if (now - fps.t0 > 1000) { $("fps").textContent = (fps.n*1000/(now-fps.t0)).toFixed(1); fps = {n:0,t0:now}; }
+  $("nTracks").textContent = tracks.length;
+  requestAnimationFrame(loop);
+}
+
+/* ---------- Overlay ---------- */
+function draw() {
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  const sc = Math.max(1, canvas.width/900);
+  if ($("showBoxes").checked && running) {
+    for (const t of tracks) {
+      if (t.missed) continue;
+      const c = CLASSES[t.cls()], [x,y,w,h] = t.box;
+      ctx.strokeStyle = t.counted ? "#fff" : c.hex; ctx.lineWidth = (t.counted?3:2)*sc;
+      ctx.strokeRect(x,y,w,h);
+      ctx.fillStyle = c.hex; ctx.font = `600 ${14*sc}px system-ui`;
+      ctx.fillText(c.label, x+3, Math.max(14*sc, y-4));
+    }
+  }
+  if (line) {
+    const {a,b} = line;
+    ctx.lineWidth = 4*sc; ctx.strokeStyle = "#f5b301";
+    ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
+    const dx=b.x-a.x, dy=b.y-a.y, L=Math.hypot(dx,dy)||1, nx=-dy/L, ny=dx/L, ux=dx/L, uy=dy/L, mx=(a.x+b.x)/2, my=(a.y+b.y)/2;
+    const o = Math.min(60*sc, L*0.2), off = 16*sc, hd = 14*sc;
+    const arrow = (sx,sy,ex,ey,col,txt) => {
+      ctx.strokeStyle=col; ctx.fillStyle=col; ctx.lineWidth=4*sc;
+      ctx.beginPath(); ctx.moveTo(sx,sy); ctx.lineTo(ex,ey); ctx.stroke();
+      const g = Math.atan2(ey-sy,ex-sx);
+      ctx.beginPath(); ctx.moveTo(ex,ey); ctx.lineTo(ex-hd*Math.cos(g-.5),ey-hd*Math.sin(g-.5)); ctx.lineTo(ex-hd*Math.cos(g+.5),ey-hd*Math.sin(g+.5)); ctx.fill();
+      ctx.font = `700 ${18*sc}px system-ui`; ctx.fillText(txt, ex+6*sc, ey+6*sc);
+    };
+    arrow(mx-nx*o+ux*off, my-ny*o+uy*off, mx+nx*o+ux*off, my+ny*o+uy*off, "#3ec7a6", "1");
+    arrow(mx+nx*o-ux*off, my+ny*o-uy*off, mx-nx*o-ux*off, my-ny*o-uy*off, "#ff7a59", "2");
+  }
+  if (source) $("clock").textContent = nowTime().toLocaleTimeString("id-ID");
+  const ms = runAccum + (running ? performance.now() - runStart : 0), s = Math.floor(ms/1000);
+  $("dur").textContent = `${Math.floor(s/3600) ? Math.floor(s/3600)+":" : ""}${String(Math.floor(s/60)%60).padStart(Math.floor(s/3600)?2:1,"0")}:${String(s%60).padStart(2,"0")}`;
+  requestAnimationFrame(draw);
+}
+
+/* ---------- Init ---------- */
+restore(); render(); draw();
+if (line) { $("hint").hidden = true; }
+loadModel($("model").value);
+</script>
+</body>
+</html>
