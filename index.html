@@ -7,6 +7,7 @@
 <title>Traffic Counter HP</title>
 <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.20/dist/hls.min.js"></script>
 <style>
   :root{
     --bg:#0f1216; --panel:#171b21; --line:#2a313a; --text:#e6e9ee; --muted:#8b95a3;
@@ -64,10 +65,25 @@
   <span id="status" class="pill">memuat model…</span>
 </header>
 
-<div class="row2">
+<div class="row">
   <button id="btnCam" class="primary">Kamera HP</button>
   <button id="btnFile">Video rekaman</button>
+  <button id="btnCctv">CCTV Dishub</button>
   <input id="file" type="file" accept="video/*">
+</div>
+
+<div class="card" id="cctvBox" hidden>
+  <div class="form" style="grid-template-columns:1fr">
+    <label>Alamat proxy (Cloudflare Worker)
+      <input id="proxyUrl" type="text" inputmode="url" placeholder="https://cctv-proxy.namaanda.workers.dev"></label>
+    <label>Kamera
+      <select id="cctvCam" style="width:100%"></select></label>
+  </div>
+  <div class="row2">
+    <button id="btnCamList">Muat ulang daftar</button>
+    <button id="btnCctvGo" class="primary">Sambungkan</button>
+  </div>
+  <p class="muted" style="margin:8px 0 0">Sumber: CCTV Dishub Kab. Tangerang. Waktu kejadian memakai jam siaran (sudah dikoreksi jeda stream). Biarkan tab ini tetap terbuka di depan selama menghitung.</p>
 </div>
 
 <div class="stage" id="stage" style="margin-top:10px">
@@ -159,7 +175,8 @@ const STORE_KEY = "trafficCounterHP.v1";
 const $ = id => document.getElementById(id);
 const video = $("video"), canvas = $("overlay"), ctx = canvas.getContext("2d");
 let model = null, modelName = "", running = false, drawing = false, dragStart = null;
-let source = null;          // "camera" | "file"
+let source = null;          // "camera" | "file" | "cctv"
+let hls = null;
 let stream = null, fileStartMs = 0;
 let line = null, tracks = [], nextId = 1, events = [];
 let fps = {n:0, t0:performance.now()}, runStart = 0, runAccum = 0, wakeLock = null;
@@ -197,8 +214,11 @@ $("model").onchange = () => loadModel($("model").value);
 
 /* ---------- Sumber video ---------- */
 function stopSource() {
+  if (hls) { hls.destroy(); hls = null; }
   if (stream) { stream.getTracks().forEach(t=>t.stop()); stream = null; }
-  if (video.src) { URL.revokeObjectURL(video.src); video.removeAttribute("src"); }
+  if (video.src) { if (video.src.startsWith("blob:")) URL.revokeObjectURL(video.src); video.removeAttribute("src"); video.load(); }
+  video.removeAttribute("crossorigin");
+  $("cctvBox").hidden = true; $("btnCctv").classList.remove("on");
   video.srcObject = null;
 }
 function fitStage() {
@@ -259,8 +279,94 @@ $("file").onchange = () => {
 $("fileStart").onchange = () => { const d = new Date($("fileStart").value); if (!isNaN(d)) fileStartMs = d.getTime(); };
 video.addEventListener("ended", () => { if (running) toggleRun(); setStatus("video selesai"); });
 
+/* ---------- CCTV Dishub (HLS lewat proxy) ---------- */
+const CCTV_KEY = "trafficCounterHP.cctv";
+// Cadangan bila /cameras di proxy gagal (diambil dari peta CCTV Dishub, Okt 2026)
+const CCTV_FALLBACK = [
+  ["01jsnyfnzn18d0ca1m7p4ctvx1","Jayanti 1 Arah Serang"],["01jsnyfnzqgp8ey0jpz4hec4xa","Jayanti 2 Arah Gembong"],
+  ["01jsnyfnzs6e5818bdsed2jppp","Cikupa Kedaton 1"],["01jsnyfnzt5nxdn9t5fzt0265r","Cikupa Mas"],
+  ["01jsnyfnzv75f3w6m701qt8rn5","Cisauk 1"],["01jsnyfnzwk8thm9m03a4prrfh","Cisauk 2"],
+  ["01jsr079n4btzjemf6r9br473w","Simpang Rajeg Kukun 1"],["01jsr0j5nwjcbthcb6aypa6dcr","Simpang Rajeg Kukun 2"],
+  ["01jsr0t8vyed4mcezqccqfngha","Simpang Pasar Kemis 1"],["01jsr3dmjxav35pvcja8j4c6ac","Simpang Pasar Kemis 2"],
+  ["01jsr485tfw1cwwa1v6c3jpgfd","Simpang Sepatan 1"],["01jsr4h8jwz9f0akrk9bd48qt7","Simpang Sepatan 2"],
+  ["01jsrc5g3cz9wsb0305zte4h04","Simpang Islamic 1"],["01jsrcb5aqka89ned967d8gz1k","Simpang Islamic 2"],
+  ["01jsrcpqn62mej02bc0h565epz","Simpang Dadap 1"],["01jsrctg4pc3xdf5vkjjg4pcfd","Jembatan Dadap"],
+  ["01jsrdvkp3ssgqrtemf8kn8gv6","Simpang Legok 1"],["01jsre3pj905zcym25730bhw5q","Simpang Legok 2"],
+  ["01jsrefb2z1e8y217vqdn6q60f","Simpang Adiyasa 1"],["01jsrepbfdrenxw1k42nxw94c5","Simpang Adiyasa 2"],
+  ["01jsrev0qphd8m3v37rqf1xf9y","Pemda Tigaraksa"],["01jv64k58jgtdzt54ywvxyr134","Simpang Alun Alun Tigaraksa"],
+  ["01jzvpeyhgex8qb9j5h2dct3a7","Jl. Pemda Tigaraksa 1"],["01jzvpwyqcs2g5kk9rc1s37e4y","Jl. Pemda Tigaraksa 2"],
+  ["01jzvqax0cms7wh04jqhw61t3r","Kecamatan Mauk"],["01jzvqg6wswbn9vc37nyyf0qg1","Tugu Mauk"],
+  ["01jzvqtpxmrvd9pcbbsh2jq61q","Jl. Pantura Bitung 1"],["01jzvr0hphd8c104283f8g1d9n","Jl. Pantura Bitung 2"],
+  ["01k4mapmw669p23ks3dkpkb066","Simpang Bugel Tigaraksa"],["01k4p20xkjzafpgg5bayy3kj8q","Simpang Bugel Arah Puspem"],
+].map(([id,name]) => ({id,name}));
+function cctvPrefs(){ try { return JSON.parse(localStorage.getItem(CCTV_KEY) || "{}"); } catch(e) { return {}; } }
+function cctvSavePrefs(){ try { localStorage.setItem(CCTV_KEY, JSON.stringify({proxy:$("proxyUrl").value.trim(), cam:$("cctvCam").value})); } catch(e) {} }
+function proxyBase(){ return $("proxyUrl").value.trim().replace(/\/+$/,""); }
+function fillCams(list){
+  const sel = $("cctvCam"), keep = sel.value || cctvPrefs().cam;
+  sel.innerHTML = list.slice().sort((a,b)=>a.name.localeCompare(b.name,"id")).map(c => `<option value="${c.id}">${c.name.replace(/</g,"&lt;")}</option>`).join("");
+  if (keep && list.some(c=>c.id===keep)) sel.value = keep;
+}
+async function loadCams(){
+  const base = proxyBase();
+  if (!base) { fillCams(CCTV_FALLBACK); return; }
+  try {
+    const r = await fetch(base + "/cameras", {cache:"no-store"});
+    const list = await r.json();
+    if (!Array.isArray(list) || !list.length) throw new Error("kosong");
+    fillCams(list); setStatus(list.length + " kamera tersedia");
+  } catch(e) { fillCams(CCTV_FALLBACK); setStatus("daftar kamera cadangan dipakai"); }
+}
+$("btnCctv").onclick = () => {
+  const box = $("cctvBox"); box.hidden = !box.hidden; $("btnCctv").classList.toggle("on", !box.hidden);
+  if (!box.hidden && !$("cctvCam").options.length) loadCams();
+};
+$("btnCamList").onclick = () => { cctvSavePrefs(); loadCams(); };
+$("proxyUrl").addEventListener("change", () => { cctvSavePrefs(); loadCams(); });
+$("cctvCam").addEventListener("change", cctvSavePrefs);
+$("btnCctvGo").onclick = async () => {
+  const base = proxyBase(), id = $("cctvCam").value;
+  if (!/^https:\/\//.test(base)) { setStatus("isi alamat proxy https://", "err"); return; }
+  if (!id) { setStatus("pilih kamera", "err"); return; }
+  cctvSavePrefs();
+  const camName = $("cctvCam").selectedOptions[0].textContent;
+  const src = `${base}/v/${id}/${id}.m3u8`;
+  if (running) toggleRun();
+  stopSource();
+  video.onloadedmetadata = null;
+  video.crossOrigin = "anonymous"; video.loop = false;
+  source = "cctv"; $("startWrap").hidden = true;
+  if (!$("site").value.trim()) { $("site").value = "CCTV " + camName; save(); }
+  setStatus("menyambung: " + camName);
+  if (window.Hls && Hls.isSupported()) {
+    hls = new Hls({liveSyncDurationCount:3, manifestLoadingMaxRetry:6, levelLoadingMaxRetry:6, fragLoadingMaxRetry:6, lowLatencyMode:false});
+    let recovers = 0;
+    hls.on(Hls.Events.ERROR, (ev, d) => {
+      if (!d.fatal) return;
+      if (d.type === Hls.ErrorTypes.NETWORK_ERROR && recovers++ < 5) { setStatus("stream terputus, mencoba lagi…", "err"); setTimeout(()=>hls && hls.startLoad(), 3000); }
+      else if (d.type === Hls.ErrorTypes.MEDIA_ERROR && recovers++ < 5) hls.recoverMediaError();
+      else setStatus("CCTV gagal: " + d.details, "err");
+    });
+    hls.on(Hls.Events.FRAG_BUFFERED, () => { recovers = 0; if (source==="cctv") setStatus("CCTV: " + camName, "live"); });
+    hls.loadSource(src); hls.attachMedia(video);
+  } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
+    video.src = src;   // Safari/iOS lama: HLS bawaan
+  } else { setStatus("browser tidak mendukung HLS", "err"); source = null; updateRunBtn(); return; }
+  try { await video.play(); } catch(e) {}
+  $("cctvBox").hidden = true; $("btnCctv").classList.remove("on");
+  updateRunBtn();
+};
+(() => { const p = cctvPrefs(); if (p.proxy) $("proxyUrl").value = p.proxy; })();
+
 function toLocalInput(d){ const p=n=>String(n).padStart(2,"0"); return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`; }
-function nowTime() { return source === "file" ? new Date(fileStartMs + video.currentTime*1000) : new Date(); }
+function nowTime() {
+  if (source === "file") return new Date(fileStartMs + video.currentTime*1000);
+  if (source === "cctv" && hls) {
+    if (hls.playingDate) return new Date(hls.playingDate.getTime());           // EXT-X-PROGRAM-DATE-TIME bila ada
+    if (isFinite(hls.latency) && hls.latency > 0) return new Date(Date.now() - hls.latency*1000); // koreksi jeda siaran
+  }
+  return new Date();
+}
 
 /* ---------- Garis hitung (sentuh) ---------- */
 function toXY(ev) {
@@ -400,7 +506,7 @@ function toggleRun() {
   $("btnRun").classList.toggle("on", running);
   if (running) {
     runStart = performance.now(); requestWake();
-    if (source === "file") video.play();
+    if (source === "file" || source === "cctv") video.play().catch(()=>{});
     loop();
   } else {
     runAccum += performance.now() - runStart;
